@@ -30,6 +30,13 @@
 // │                                                                    │
 // └──────────────────────────────────────────────────────────────────┘
 
+// ==========================================
+// 指令6：冻结银行账户
+// 需要 admin（管理员）+ owner（账户拥有者）同时签名
+// → 防止管理员单方面冻结用户资金
+// → 也防止用户自己随意冻结逃避审查
+// ==========================================
+
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use serde::Deserialize;
@@ -186,7 +193,144 @@ pub mod mini_bank {
         //   3. 把 bank_account 的 owner 设为 System Program
         Ok(())
     }
+
+    // ==========================================
+    // 指令6：冻结银行账户 FreezeAccount
+    // 需要 admin（管理员）+ owner（账户拥有者）同时签名
+    // → 防止管理员单方面冻结用户资金
+    // → 也防止用户自己随意冻结逃避审查
+    // ==========================================
+
+    pub fn freeze_account(ctx: Context<FreezeAccount>) -> Result<()> {
+        let bank_account = &mut ctx.accounts.bank_account;
+
+        //不能冻结已冻结的号
+        require!(
+            bank_account.status != AccountStatus::Frozen,
+            BankError::AccountFrozen
+        );
+
+        bank_account.status = AccountStatus::Frozen;
+
+        Ok(())
+    }
+
+    ///指令7，初始化银行配置
+    pub fn init_config(ctx: Context<InitBankConfig>, rate: u16) -> Result<()> {
+        let bank_config = &mut ctx.accounts.bank_config;
+
+        bank_config.admin = ctx.accounts.admin.key();
+
+        bank_config.bump = ctx.bumps.bank_config;
+
+        bank_config.fee_rate = rate;
+
+        // bank_config.announcement = String::from("this is  a bank announcement ");
+
+        bank_config.total_accounts = 0;
+
+        Ok(())
+    }
+
+    ///指令7，更新配置
+    pub fn update_config(
+        ctx: Context<UpdateConfig>,
+        rate: u16,
+        announcement: String,
+    ) -> Result<()> {
+        let bank_config = &mut ctx.accounts.bank_config;
+
+        bank_config.fee_rate = rate;
+
+        bank_config.announcement = announcement;
+
+        Ok(())
+    }
 }
+
+#[derive(Accounts)]
+#[instruction(rate: u16,announcement:String)] //当需要用到指令参数时传入
+pub struct UpdateConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>, //银行付钱
+
+    #[account(
+        mut,
+        constraint = bank_config.admin == admin.key() ,  //校验是不是管理员
+        seeds=[b"bank_config"],                     //PDA seeds：固定字符串（全局唯一）
+        realloc = BankConfig::space(announcement.len()),
+        realloc::payer=admin,
+        realloc::zero = true,
+        bump=bank_config.bump
+    )]
+    pub bank_config: Box<Account<'info, BankConfig>>,
+
+    pub system_program: Program<'info, System>, //realloc需要转移租金
+}
+
+#[account]
+pub struct BankConfig {
+    pub admin: Pubkey,
+    pub fee_rate: u16,        // 手续费率，单位：基点（1 基点 = 0.01%）（2 字节）
+    pub total_accounts: u32,  // 已开户总数（4 字节）
+    pub announcement: String, // 公告（动态长度：4 + N 字节）
+    pub bump: u8,             // PDA bump 值（1 字节）
+}
+
+impl BankConfig {
+
+    // pub admin: Pubkey,
+    // pub fee_rate: u16,        // 手续费率，单位：基点（1 基点 = 0.01%）（2 字节）
+    // pub total_accounts: u32,  // 已开户总数（4 字节）
+    // pub announcement: String, // 公告（动态长度：4 + N 字节）
+    // pub bump: u8,             // PDA bump 值（1 字节）
+    pub fn space(announcement: usize) -> usize {
+        8 + 32 + 2 + 4 + (4 + announcement) + 1
+    }
+}
+
+#[derive(Accounts)]
+pub struct FreezeAccount<'info> {
+    pub signer: Signer<'info>, // 账户所有者
+
+    #[account(mut)]
+    pub admin: Signer<'info>, //银行付钱
+
+    #[account(
+        constraint = bank_config.admin == admin.key() ,  //校验是不是管理员
+        seeds=[b"bank_config"],                     //PDA seeds：固定字符串（全局唯一）
+        bump
+    )]
+    pub bank_config: Account<'info, BankConfig>,
+
+    #[account(
+        mut,
+        constraint = bank_account.owner == signer.key() @ BankError::AccountNotEmpty,
+        seeds=[b"bank_account",signer.key().as_ref()],
+        bump
+    )]
+    pub bank_account: Account<'info, BankAccount>,
+}
+
+#[derive(Accounts)]
+
+pub struct InitBankConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        init,
+        payer = admin,
+        space=BankConfig::space(0),
+        seeds=[b"bank_config"],                     //PDA seeds：固定字符串（全局唯一）
+        bump
+    )]
+    pub bank_config: Account<'info, BankConfig>,
+
+    pub system_program: Program<'info, System>,
+}
+
+
 
 #[derive(Accounts)]
 pub struct CloseAccount<'info> {
@@ -197,7 +341,7 @@ pub struct CloseAccount<'info> {
         mut,
         constraint = bank_account.owner == signer.key() @ BankError::AccountNotEmpty,
         seeds=[b"bank_account",signer.key().as_ref()],
-        bump,
+        bump = bank_account.bump,
         close = signer
     )]
     pub bank_account: Account<'info, BankAccount>,

@@ -11,8 +11,8 @@ describe("mini-bank", () => {
 
   const program = anchor.workspace.MiniBank as Program<MiniBank>;
 
-  // 生成两个测试账号：Alice 和 Bob
-  const alice = anchor.web3.Keypair.generate();
+  // 生成个测试账号：Alice 和 Bob
+  const alice = anchor.web3.Keypair.generate(); //同时是金库管理员
   const bob = anchor.web3.Keypair.generate();
 
   // 辅助函数：根据所有者公钥推导 BankAccount PDA
@@ -23,6 +23,8 @@ describe("mini-bank", () => {
     )[0];
   };
 
+  const bankConfigPDA = PublicKey.findProgramAddressSync([Buffer.from("bank_config")],program.programId)[0];
+
   it("准备测试环境：为空白账号空投 SOL", async () => {
     const signature = await provider.connection.requestAirdrop(alice.publicKey, 2 * LAMPORTS_PER_SOL);
     await provider.connection.confirmTransaction(signature);
@@ -30,6 +32,24 @@ describe("mini-bank", () => {
     const signature2 = await provider.connection.requestAirdrop(bob.publicKey, 2 * LAMPORTS_PER_SOL);
     await provider.connection.confirmTransaction(signature2);
   });
+
+    it("指令 0: 银行配置初始化", async () => {
+
+        await program.methods
+            .initConfig(0.05)
+            .accounts({
+                admin:alice.publicKey,
+                bankConfig:bankConfigPDA,
+                systemProgram: SystemProgram.programId,
+            } as any) // 强制转换类型以匹配生成的 IDL
+            .signers([alice])
+            .rpc();
+
+        // const account = await program.account.bankAccount.fetch(bankPDA);
+        // expect(account.name).to.equal(accountName);
+        // expect(account.owner.toBase58()).to.equal(alice.publicKey.toBase58());
+        // expect(account.balance.toNumber()).to.equal(0);
+    });
 
   it("指令 1: Alice 成功开户", async () => {
     const bankPDA = getBankPDA(alice.publicKey);
@@ -116,6 +136,22 @@ describe("mini-bank", () => {
     expect(bobAcc.balance.toNumber()).to.equal(0.2 * LAMPORTS_PER_SOL);
   });
 
+    it("指令 6: 冻结账户 Bob", async () => {
+        await program.methods
+            .freezeAccount()
+            .accounts({
+                signer: bob.publicKey ,
+                admin:alice.publicKey,
+                bankConfig:bankConfigPDA,
+                bankAccount:getBankPDA(bob.publicKey)
+            } as any)
+            .signers([alice,bob])
+            .rpc();
+        const  account = await program.account.bankAccount.fetch(getBankPDA(bob.publicKey));
+        expect(account.status)
+
+    });
+
   it("指令 5: 销户测试 (预期失败 & 成功情况)", async () => {
     const bobBank = getBankPDA(bob.publicKey);
 
@@ -161,4 +197,35 @@ describe("mini-bank", () => {
       expect(err.toString()).to.include("Account does not exist");
     }
   });
+
+    // it("指令 6: 冻结账户 Bob", async () => {
+    //     await program.methods
+    //         .freezeAccount()
+    //         .accounts({
+    //             signer: bob.publicKey ,
+    //             admin:alice.publicKey,
+    //             bankConfig:bankConfigPDA,
+    //             bankAccount:getBankPDA(bob.publicKey)
+    //         } as any)
+    //         .signers([alice])
+    //         .rpc();
+    //     const  account = await program.account.bankAccount.fetch(getBankPDA(bob.publicKey));
+    //     expect(account.status)
+    //
+    // });
+
+    it("指令 7: 修改银行配置 ", async () => {
+        await program.methods
+            .updateConfig(0.17,"费率更新为0.17")
+            .accounts({
+                admin:alice.publicKey,
+                bankConfig:bankConfigPDA,
+                system_program:SystemProgram.programId
+            } as any)
+            .signers([alice])
+            .rpc();
+        const  account = await program.account.bankConfig.fetch(bankConfigPDA);
+        console.log(account.announcement)
+
+    });
 });
